@@ -1,0 +1,76 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    Env: demo
+  vars_files:
+    - instances.yaml
+  roles:
+    - {
+        role: "instances",
+        services: "{{ instances | selectattr('name', 'equalto', 'app') | list | first }}",
+      }
+    - {
+        role: "instances",
+        services: "{{ instances | selectattr('name', 'equalto', 'web') | list | first }}",
+      }
+  tasks:
+    - name: Get All Runnings EC2 instances
+      ec2_instance_info:
+        region: "{{ vpc_region }}"
+        filters:
+          instance-state-name: ["running"]
+          "tag:Env": "{{ Env }}"
+      register: running_instances
+
+    - name: Generate Public Hosts group
+      add_host:
+        hostname: "{{ item.public_dns_name }}"
+        groupname: public_hosts
+        instance_name: "{{ item.tags.Name }}"
+        instance_subnet_id: "{{ item.subnet_id }}"
+      when: item.public_dns_name != ""
+      with_items: "{{ running_instances.instances }}"
+
+    ## Setting delay because sometimes initialization run some blocking tasks
+    ## which blocks for some time nginx installation which could fail nginx configuration below.
+    - name: Wait for SSH to come up for Public Group
+      wait_for:
+        host: "{{ item }}"
+        port: 22
+        delay: 20
+        timeout: 120
+        state: started
+      with_items: "{{ groups['public_hosts'] }}"
+
+- hosts: public_hosts
+  remote_user: ec2-user
+  become: true
+  become_method: sudo
+  vars:
+    Env: demo
+    ansible_ssh_host_key_checking: no
+    ansible_ssh_private_key_file: ./{{ key_name }}/{{ key_name }}.pem
+  vars_files:
+    - instances.yaml
+  tasks:
+    - name: Get All Runnings EC2 instances
+      delegate_to: localhost
+      ec2_instance_info:
+        region: "{{ vpc_region }}"
+        filters:
+          instance-state-name: ["running"]
+          "tag:Env": "{{ Env }}"
+      register: running_instances
+
+    - name: Manage Nginx configuration file
+      template:
+        src: "templates/service.conf.j2"
+        dest: "/etc/nginx/conf.d/service.conf"
+        mode: 0644
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted

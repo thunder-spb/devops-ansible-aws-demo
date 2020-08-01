@@ -1,0 +1,50 @@
+---
+## Create instances if not created. Checked within Tag Name.
+- name: Get Running EC2 instances
+  ec2_instance_info:
+    region: "{{ vpc_region }}"
+    filters:
+      instance-state-name: ["running"]
+      "tag:Type": "{{ services.name }}"
+  register: running_instances
+
+- name: Create EC2 Instance(s)
+  ec2:
+    region: "{{ vpc_region }}"
+    group: "{{ sg_name }}"
+    keypair: "{{ key_name }}"
+    instance_type: "{{ ec2_type }}"
+    image: "{{ ami_id }}"
+    vpc_subnet_id: "{{ item.subnet }}"
+    assign_public_ip: yes
+    wait: True
+    wait_timeout: 600
+    assign_public_ip: "{% if (item.assign_public_ip | default(false)) and (item.assign_public_ip | bool) %}yes{% else %}no{% endif %}"
+    user_data: |
+      #!/bin/sh
+      sudo amazon-linux-extras install -y nginx1 
+    instance_tags:
+      Name: "{{ services.name }}-{{ item.seq_num }}"
+      Type: "{{ services.name }}"
+      Env: "{{ Env }}"
+  with_items: "{{ services.subnets }}"
+  when: running_instances.instances | selectattr('tags.Name', 'equalto', "{{ services.name }}-{{ item.seq_num }}") | list | count == 0
+  register: ec2
+
+## Manage removed instances block
+- name: Get configured Instance names
+  set_fact: 
+    _configured_instances: "{{ [] }}"
+
+- name: Get configured Instance names
+  set_fact: 
+    _configured_instances: '{{ _configured_instances }} + ["{{ services.name }}-{{ item.seq_num }}"]'
+  with_items: "{{ services.subnets }}"
+
+- name: Cleanup redundant EC2 Instance(s)
+  ec2:
+    region: "{{ vpc_region }}"
+    state: absent
+    instance_ids: "{{ item.instance_id }}"
+  when: item.tags.Name not in _configured_instances
+  with_items: "{{ running_instances.instances }}"

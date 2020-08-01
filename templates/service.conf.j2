@@ -1,0 +1,11 @@
+upstream apps {
+    {% for instance in running_instances.instances | selectattr("tags.Type", "equalto", "app") | selectattr("subnet_id", "equalto", instance_subnet_id) | list %}
+    server {{ instance.private_dns_name }}; # {{ instance.tags.Name }}
+    {% endfor %}
+}
+server {
+    listen 80;
+    location / {
+        proxy_pass http://apps;
+    }
+}
